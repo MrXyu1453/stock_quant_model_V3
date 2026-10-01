@@ -34,10 +34,14 @@ pip install -r requirements.txt
 python run_app.py          # 默认 http://127.0.0.1:8050
 ```
 
+Windows 下推荐直接双击根目录的 `启动股票分析平台.bat`：启动服务并自动打开浏览器（若已在运行则只打开浏览器，不重复启动）。把该脚本「发送到 → 桌面快捷方式」后即可从桌面一键启动，命令行窗口保持开着即服务运行中。
+
 首次运行会自动完成初始化，无需手动建库：
 - 自动创建 SQLite 数据库（用户/自选分组/交易日志/模拟炒股战绩等表）
 - 自动创建默认账号 `admin / admin123`（登录后请立即修改密码）
-- 全市场股票代码可在「股票管理」页一键拉取
+- 股票列表初始为空：在「分析」页输入代码「插入」，或到「股票管理」页批量添加并建立自选股分组
+
+📖 **完整使用教程**（各页面操作指南、模拟炒股详细玩法、桌面启动、常见问题）见 [docs/使用教程.md](docs/使用教程.md)。
 
 ## 配置 tushare token
 
@@ -100,6 +104,7 @@ app/
   sector_fund_strength.py# 板块资金强度页
   trading_journal.py     # 交易日志页
 config/config.example.yaml  # 配置模板（复制为 config/config.yaml 后使用）
+docs/使用教程.md          # 面向新用户的完整使用指南
 tests/                   # pytest 单元测试
 ```
 
