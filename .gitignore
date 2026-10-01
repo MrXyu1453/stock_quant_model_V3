@@ -1,0 +1,36 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+htmlcov/
+.coverage
+
+# ===== 个人数据（用户账号/交易日志/持仓/模拟炒股战绩等，绝不上传） =====
+# SQLite 数据库：首次运行自动创建
+*.db
+*.sqlite3
+# 本地缓存：数据缓存、AI API Key(cache/ai_settings.json)、
+# 会话密钥(cache/secret_key)、因子模型、扫描结果
+cache/
+# 用户标记的自选股与记事本
+marked_stocks*.txt
+notepad*.txt
+# 全市场代码缓存（可在「股票管理」页一键重新拉取）
+stock_codes_cache.json
+
+# ===== 运行日志 =====
+*.log
+logs/
+
+# ===== 配置（含 tushare token，勿上传；模板见 config/config.example.yaml） =====
+config/config.yaml
+
+# ===== OS / 编辑器 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

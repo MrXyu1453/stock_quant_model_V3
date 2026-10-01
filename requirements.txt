@@ -1,0 +1,23 @@
+# 核心依赖（Python 3.10+，实际开发环境为 3.14）
+dash>=4.4
+plotly>=7.1
+pandas>=2.2
+numpy>=1.26
+scipy>=1.11
+PyYAML>=6.0
+redis>=5.0
+Flask>=3.0
+
+# 数据源
+tushare>=1.4.29
+baostock>=0.9.4
+
+# 因子建模（缺失时自动回退 sklearn GradientBoosting）
+scikit-learn>=1.4
+lightgbm>=4.0
+
+# Excel 导出（因子训练页「导出Excel」功能）
+openpyxl>=3.1
+
+# 测试
+pytest>=8.0
