@@ -947,10 +947,12 @@ def do_change_password(n_clicks, old_pwd, new_pwd, confirm_pwd):
 def router(pathname, auth_state):
     user = auth.get_current_user()
     if not user:
+        # 未登录: 显示登录页；page-header 的输出是 children，必须给组件
+        # （给 style 字典会被 React 当子节点渲染而报错）
         return (
             {'display': 'block'},
             {'display': 'none'},
-            {'display': 'none'},
+            create_header(pathname),
             {'display': 'none'},
             {'display': 'none'},
             {'display': 'none'},
