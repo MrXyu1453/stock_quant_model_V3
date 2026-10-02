@@ -14,6 +14,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # 数据库路径（相对项目根目录解析，避免受启动目录影响）
 DB_NAME = project_path(config.get('database', {}).get('name', 'stock_codes.db'))
+# 旧版已标记股票文件的存放目录（init_db 时一次性迁移入数据库）
+MARKED_FILES_DIR = project_path('.')
 
 # 默认管理员账号（首次初始化时创建，接管历史遗留数据）
 DEFAULT_ADMIN_USERNAME = 'admin'
@@ -207,6 +209,17 @@ def init_db():
                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         _ensure_user_id_column(c, 'game_records')
 
+        # 已购买标记表（原 marked_stocks*.txt 文件，按用户隔离）
+        marked_table_new = ('marked_stocks',) not in c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        c.execute('''CREATE TABLE IF NOT EXISTS marked_stocks
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER,
+                      code TEXT NOT NULL,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      UNIQUE(user_id, code))''')
+        _ensure_user_id_column(c, 'marked_stocks')
+
         # 首次初始化：创建默认管理员并接管历史遗留数据
         c.execute("SELECT COUNT(*) FROM users")
         if c.fetchone()[0] == 0:
@@ -216,11 +229,46 @@ def init_db():
             _migrate_legacy_to_user(c, admin_id, legacy_capital)
             logging.info("已创建默认管理员账号 admin，并接管历史遗留数据")
 
+        if marked_table_new:
+            _migrate_marked_stocks_files(c)
+
         conn.commit()
         conn.close()
         logging.info("数据库初始化完成")
     except Exception as e:
         logging.error(f"数据库初始化出错: {e}")
+
+
+def _migrate_marked_stocks_files(c):
+    """将旧版 marked_stocks*.txt 文件一次性导入数据库（按文件名中的用户名归属）"""
+    import glob
+    import os
+    imported = 0
+    for path in glob.glob(os.path.join(MARKED_FILES_DIR, 'marked_stocks*.txt')):
+        base = os.path.basename(path)                     # marked_stocks.txt / marked_stocks_admin.txt
+        suffix = base[len('marked_stocks'):-len('.txt')]  # '' 或 '_admin'
+        username = suffix[1:] if suffix.startswith('_') else None
+        uid = None
+        if username:
+            row = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+            uid = row[0] if row else None
+        else:
+            # 无后缀的旧共享文件归到第一个用户（与 _migrate_legacy_to_user 一致）
+            row = c.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+            uid = row[0] if row else None
+        if uid is None:
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                codes = {line.strip() for line in f if line.strip()}
+            for code in sorted(codes):
+                c.execute("INSERT OR IGNORE INTO marked_stocks (code, user_id) VALUES (?, ?)",
+                          (code, uid))
+                imported += 1
+        except Exception as e:
+            logging.warning(f"迁移标记文件 {base} 失败: {e}")
+    if imported:
+        logging.info(f"已迁移 {imported} 条已标记股票记录到数据库")
 
 
 # ==================== 用户操作 ====================
@@ -914,3 +962,57 @@ def get_game_user_summary(user_id):
             'avg_excess': round(sum(excesses) / n, 2),
             'positive_ratio': round(sum(1 for e in excesses if e > 0) / n, 2),
             'best_excess': round(max(excesses), 2)}
+
+
+# ==================== 已购买标记（按用户隔离） ====================
+
+def get_marked_stocks():
+    """当前用户已标记（已购买）的股票代码集合；未登录返回空集合"""
+    user_id = get_current_user_id()
+    if user_id is None:
+        return set()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        rows = c.execute("SELECT code FROM marked_stocks WHERE user_id=? ORDER BY code",
+                         (user_id,)).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception as e:
+        logging.error(f"获取已标记股票时出错: {e}")
+        return set()
+
+
+def add_marked_stock(code):
+    """为当前用户添加标记；未登录返回 False"""
+    user_id = get_current_user_id()
+    if user_id is None:
+        return False
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO marked_stocks (code, user_id) VALUES (?, ?)",
+                  (code, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"添加已标记股票时出错: {e}")
+        return False
+
+
+def remove_marked_stock(code):
+    """移除当前用户的标记；未登录返回 False"""
+    user_id = get_current_user_id()
+    if user_id is None:
+        return False
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("DELETE FROM marked_stocks WHERE code=? AND user_id=?", (code, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"移除已标记股票时出错: {e}")
+        return False

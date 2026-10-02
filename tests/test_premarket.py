@@ -304,14 +304,14 @@ def test_fetch_briefing_aggregates_and_caches(monkeypatch, pm_env):
     monkeypatch.setattr(pm, 'a_share_recap', fake_recap)
     monkeypatch.setattr(pm, 'global_overnight', lambda: [])
     monkeypatch.setattr(pm, 'new_shares_today', lambda: [])
-    monkeypatch.setattr(pm, 'watchlist_moves', lambda: [])
-    monkeypatch.setattr(pm, 'holdings_watch', lambda: [])
+    monkeypatch.setattr(pm, 'get_current_user_id', lambda: None)  # 未登录: 无个性化板块
 
     b1 = pm.fetch_premarket_briefing(use_cache=True)
     b2 = pm.fetch_premarket_briefing(use_cache=True)
     assert b1['from_cache'] is False, '首次应重算'
     assert b2['from_cache'] is True, '第二次应命中缓存'
     assert calls['n'] == 1, '缓存命中不应重算'
+    assert 'watchlist' not in b1 and 'holdings' not in b1, '未登录不含个性化板块'
 
     b3 = pm.fetch_premarket_briefing(use_cache=False)
     assert b3['from_cache'] is False and calls['n'] == 2, '绕过缓存应重算'
@@ -321,6 +321,7 @@ def test_fetch_briefing_section_failure_isolated(monkeypatch, pm_env):
     def boom():
         raise RuntimeError('x')
 
+    monkeypatch.setattr(pm, 'get_current_user_id', lambda: 7)
     monkeypatch.setattr(pm, 'global_overnight', boom)
     monkeypatch.setattr(pm, 'a_share_recap', boom)
     monkeypatch.setattr(pm, 'new_shares_today', lambda: [])
@@ -329,6 +330,46 @@ def test_fetch_briefing_section_failure_isolated(monkeypatch, pm_env):
     b = pm.fetch_premarket_briefing(use_cache=False)
     assert 'global' not in b and 'recap' not in b   # 失败板块缺失
     assert 'new_shares' in b and 'watchlist' in b   # 成功板块保留
+
+
+def test_personal_sections_isolated_per_user(monkeypatch, pm_env):
+    """个性化板块必须按 user_id 隔离: 不同账号各自计算与缓存，互不可见"""
+    calls = {'compute': 0}
+    monkeypatch.setattr(pm, 'trading_day_info', lambda: {'is_open': True, 'next': None})
+    monkeypatch.setattr(pm, 'global_overnight', lambda: [])
+    monkeypatch.setattr(pm, 'a_share_recap', lambda: {'indices': []})
+    monkeypatch.setattr(pm, 'new_shares_today', lambda: [])
+
+    def fake_holdings():
+        calls['compute'] += 1
+        uid = current_uid['v']
+        return [{'code': f'60000{uid}.SH', 'name': f'用户{uid}的持仓', 'pnl': uid}]
+
+    current_uid = {'v': 1}
+    monkeypatch.setattr(pm, 'holdings_watch', fake_holdings)
+    monkeypatch.setattr(pm, 'watchlist_moves', lambda: [])
+
+    current_uid['v'] = 1
+    monkeypatch.setattr(pm, 'get_current_user_id', lambda: 1)
+    b_u1_a = pm.fetch_premarket_briefing(use_cache=True)
+    b_u1_b = pm.fetch_premarket_briefing(use_cache=True)   # 命中用户1缓存
+    assert b_u1_a['holdings'][0]['code'] == '600001.SH'
+    assert b_u1_b['holdings'][0]['code'] == '600001.SH'
+    assert calls['compute'] == 1, '同一用户第二次应命中个人缓存'
+
+    current_uid['v'] = 2
+    monkeypatch.setattr(pm, 'get_current_user_id', lambda: 2)
+    b_u2 = pm.fetch_premarket_briefing(use_cache=True)
+    assert b_u2['holdings'][0]['code'] == '600002.SH', '用户2应看到自己的持仓'
+    assert calls['compute'] == 2, '不同用户各自计算'
+    assert '600001' not in str(b_u2['holdings']), '用户2不得看到用户1的持仓'
+
+    current_uid['v'] = 1
+    monkeypatch.setattr(pm, 'get_current_user_id', lambda: 1)
+    b_u1_c = pm.fetch_premarket_briefing(use_cache=True)
+    assert b_u1_c['holdings'][0]['code'] == '600001.SH'
+    assert calls['compute'] == 2, '切回用户1仍命中其个人缓存'
+    assert '600002' not in str(b_u1_c['holdings']), '用户1不得看到用户2的持仓'
 
 
 # ===================== 卡片渲染 =====================

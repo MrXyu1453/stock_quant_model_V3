@@ -24,7 +24,8 @@ import pandas as pd
 
 from .baostock_fetcher import fetch_kline_data, fetch_trade_dates
 from .data_manager import pro, _rate_limit, redis_client
-from .database_manager import get_stock_watchlist_map, get_trade_entries
+from .database_manager import (get_stock_watchlist_map, get_trade_entries,
+                               get_current_user_id)
 from .trading_journal import compute_portfolio
 
 logger = logging.getLogger(__name__)
@@ -383,52 +384,71 @@ def holdings_watch():
 
 # ===================== 汇总 =====================
 
+def _personal_sections():
+    """个性化板块（自选股异动 + 持仓关注），各板块独立降级"""
+    personal = {}
+    try:
+        personal['watchlist'] = watchlist_moves()
+    except Exception as e:
+        logger.warning(f'自选股异动板块失败: {e}')
+    try:
+        personal['holdings'] = holdings_watch()
+    except Exception as e:
+        logger.warning(f'持仓关注板块失败: {e}')
+    return personal
+
+
 def fetch_premarket_briefing(data_source=None, use_cache=True):
     """聚合盘前提醒数据。返回 dict（各板块独立降级，失败的板块缺失）
 
-    data_source 参数已废弃（改用 baostock 为主源，与页面数据源下拉无关），保留以兼容旧调用。
+    数据隔离: 公共板块（交易日历/海外/复盘/新股）全局缓存；
+    个性化板块（自选股异动/持仓关注）按 user_id 独立缓存，
+    未登录时不包含个性化数据。
+    data_source 参数已废弃（改用 baostock 为主源），保留以兼容旧调用。
     """
     today = datetime.now().strftime('%Y%m%d')
-    cache_key = f'premarket:{today}'
-    if use_cache:
-        cached = _cache_get(cache_key)
-        if cached:
-            return {**cached, 'from_cache': True}  # 不改写缓存对象（避免别名污染）
 
-    brief = {'date': today, 'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
-             'from_cache': False}
+    # ── 公共板块（全局共享缓存）──
+    public_key = f'premarket:{today}'
+    brief = _cache_get(public_key) if use_cache else None
+    if brief is None:
+        brief = {'date': today, 'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                 'from_cache': False}
 
-    cal = trading_day_info()
-    if cal:
-        brief['is_open'] = cal['is_open']
-        brief['next_open'] = cal.get('next')
-        brief['cal_source'] = cal.get('source', 'baostock')
+        cal = trading_day_info()
+        if cal:
+            brief['is_open'] = cal['is_open']
+            brief['next_open'] = cal.get('next')
+            brief['cal_source'] = cal.get('source', 'baostock')
 
-    try:
-        brief['global'] = global_overnight()
-    except Exception as e:
-        logger.warning(f'海外市场板块失败: {e}')
+        try:
+            brief['global'] = global_overnight()
+        except Exception as e:
+            logger.warning(f'海外市场板块失败: {e}')
 
-    try:
-        brief['recap'] = a_share_recap()
-    except Exception as e:
-        logger.warning(f'A股复盘板块失败: {e}')
+        try:
+            brief['recap'] = a_share_recap()
+        except Exception as e:
+            logger.warning(f'A股复盘板块失败: {e}')
 
-    ns = new_shares_today()
-    if ns is not None:
-        brief['new_shares'] = ns
+        ns = new_shares_today()
+        if ns is not None:
+            brief['new_shares'] = ns
 
-    try:
-        brief['watchlist'] = watchlist_moves()
-    except Exception as e:
-        logger.warning(f'自选股异动板块失败: {e}')
+        _cache_set(public_key, brief)
+    else:
+        brief = {**brief, 'from_cache': True}  # 不改写缓存对象（避免别名污染）
 
-    try:
-        brief['holdings'] = holdings_watch()
-    except Exception as e:
-        logger.warning(f'持仓关注板块失败: {e}')
+    # ── 个性化板块（按 user_id 隔离，未登录不含）──
+    uid = get_current_user_id()
+    if uid is not None:
+        personal_key = f'premarket:{today}:u:{uid}'
+        personal = _cache_get(personal_key) if use_cache else None
+        if personal is None:
+            personal = _personal_sections()
+            _cache_set(personal_key, personal)
+        brief.update(personal)
 
-    _cache_set(cache_key, brief)
     return brief
 
 

@@ -25,7 +25,8 @@ from .database_manager import (init_db, insert_stock_code, get_all_stock_codes, 
                                update_stock_code, is_default_admin_password,
                                create_watchlist, get_all_watchlists, delete_watchlist,
                                add_stock_to_watchlist, remove_stock_from_watchlist,
-                               get_watchlist_stocks, get_stock_watchlist_map, normalize_stock_code)
+                               get_watchlist_stocks, get_stock_watchlist_map, normalize_stock_code,
+                               get_marked_stocks, add_marked_stock, remove_marked_stock)
 from . import auth
 from .security import load_or_create_secret_key
 from .factor_page import (factor_page_layout, register_factor_callbacks, build_factor_score_panel,
@@ -1691,7 +1692,8 @@ def update_marked_stock_dropdown(n_intervals, insert_clicks, query_clicks):
 
 
 def _user_scoped_file(base_name):
-    """为文件名追加当前用户名后缀，实现文件数据按用户隔离（如 marked_stocks.txt -> marked_stocks_admin.txt）"""
+    """为文件名追加当前用户名后缀，实现文件数据按用户隔离（如 notepad.txt -> notepad_admin.txt）。
+    （已标记股票已迁移到数据库 marked_stocks 表，不再走文件）"""
     username = auth.get_current_username()
     if not username:
         return base_name
@@ -1700,12 +1702,8 @@ def _user_scoped_file(base_name):
 
 
 def _read_marked_stocks():
-    """读取当前用户已标记的股票代码集合"""
-    try:
-        with open(_user_scoped_file('marked_stocks.txt'), 'r') as f:
-            return {line.strip() for line in f.readlines() if line.strip()}
-    except FileNotFoundError:
-        return set()
+    """读取当前用户已标记的股票代码集合（数据库按 user_id 隔离）"""
+    return get_marked_stocks()
 
 
 @app.callback(
@@ -1726,12 +1724,9 @@ def handle_marked_stocks(mark_clicks, unmark_clicks, selected_code):
             parsed = json.loads(triggered_id.replace("'", '"'))
             code_to_unmark = parsed.get('index', '')
             if code_to_unmark:
-                marked_stocks = _read_marked_stocks()
-                if code_to_unmark in marked_stocks:
-                    marked_stocks.discard(code_to_unmark)
-                    with open(_user_scoped_file('marked_stocks.txt'), 'w') as f:
-                        for s in sorted(marked_stocks):
-                            f.write(s + '\n')
+                if code_to_unmark in _read_marked_stocks():
+                    remove_marked_stock(code_to_unmark)
+                    marked_stocks = _read_marked_stocks()
                     return f"已取消标记 {code_to_unmark}。", dash.no_update, build_marked_stock_list(marked_stocks)
         except Exception as e:
             return f"取消标记时出错: {e}", dash.no_update, dash.no_update
@@ -1745,9 +1740,8 @@ def handle_marked_stocks(mark_clicks, unmark_clicks, selected_code):
                 if selected_code in marked_stocks:
                     return f"股票 {selected_code} 之前已标记过。", None, build_marked_stock_list()
 
-                with open(_user_scoped_file('marked_stocks.txt'), 'a') as f:
-                    f.write(selected_code + '\n')
-                marked_stocks.add(selected_code)
+                add_marked_stock(selected_code)
+                marked_stocks = _read_marked_stocks()
                 return f"已标记股票 {selected_code} 为已购买。", None, build_marked_stock_list(marked_stocks)
             except Exception as e:
                 return f"标记股票时出错: {e}", dash.no_update, dash.no_update
