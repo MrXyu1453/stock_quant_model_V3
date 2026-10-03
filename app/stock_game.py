@@ -1173,7 +1173,10 @@ def register_stock_game_callbacks(app):
         """切换Tab / 手动刷新 / 结算(store变化)时重绘战绩区。
         游戏进行中每次点击也会更新 store，但战绩并未变化，
         直接跳过，避免逐根点击都重查数据库造成卡顿。"""
-        trig = dash.ctx.triggered_id if dash.has_context() else None
+        try:
+            trig = dash.ctx.triggered_id  # Dash 2.4+；兼容各版本
+        except Exception:
+            trig = None
         if trig == 'sg-game-store' and not (_state and _state.get('finished')):
             return dash.no_update
         return build_board_container(tab or 'top')
