@@ -286,9 +286,11 @@ def _create_game(code, freq, play_bars, source):
     except Exception:
         name = ''
     game_id = _new_game_id()
-    _GAMES[game_id] = {'df': view, 'view_start': play_start - keep_from - ctx_len,
-                       'ctx_len': ctx_len, 'play_len': play_len,
-                       'code': code, 'name': name, 'freq': freq}
+    g = {'df': view, 'view_start': play_start - keep_from - ctx_len,
+         'ctx_len': ctx_len, 'play_len': play_len,
+         'code': code, 'name': name, 'freq': freq}
+    _precompute_render_data(g)  # 整段K线与指标提前加载为numpy数组+缓存布局
+    _GAMES[game_id] = g
     while len(_GAMES) > _GAMES_MAX:
         _GAMES.popitem(last=False)
     return game_id, ''
@@ -327,10 +329,101 @@ def _save_record(state, g):
 
 
 def _game_bars(g):
-    """游戏窗口的收盘价与日期序列"""
-    vs, cl, pl = g['view_start'], g['ctx_len'], g['play_len']
-    seg = g['df'].iloc[vs + cl: vs + cl + pl]
-    return seg['close'].astype(float).tolist(), seg['trade_date'].astype(str).tolist()
+    """游戏窗口的收盘价与日期序列（首次调用后缓存，避免每次点击重复切表）"""
+    cached = g.get('_bars')
+    if cached is None:
+        vs, cl, pl = g['view_start'], g['ctx_len'], g['play_len']
+        seg = g['df'].iloc[vs + cl: vs + cl + pl]
+        cached = (seg['close'].astype(float).tolist(),
+                  seg['trade_date'].astype(str).tolist())
+        g['_bars'] = cached
+    return cached
+
+
+def _precompute_chart(df):
+    """把整段K线/均线/成交量/MACD序列一次性转为numpy数组（开局提前加载）。
+    之后每次点击只做O(1)切片视图，plotly 还会按二进制紧凑编码传输，避免逐根卡顿"""
+    def col(name):
+        return pd.to_numeric(df[name], errors='coerce').to_numpy(dtype=float)
+
+    o, c = col('open'), col('close')
+    return {
+        'dates': df['trade_date'].astype(str).tolist(),
+        'open': o, 'high': col('high'), 'low': col('low'), 'close': c,
+        'ma5': col('ma5'), 'ma10': col('ma10'), 'ma20': col('ma20'), 'ma60': col('ma60'),
+        'vol': col('vol'),
+        'vol_colors': ['#ef4444' if cv >= ov else '#22c55e' for cv, ov in zip(c, o)],
+        'macd_hist': col('macd_hist'), 'macd_dif': col('macd_dif'), 'macd_dea': col('macd_dea'),
+        'hist_colors': ['#ef4444' if h >= 0 else '#22c55e' for h in col('macd_hist')],
+    }
+
+
+def _param_rows(df):
+    """每根K线的技术参数快照（纯标量，None 表示缺失），供 build_params_panel 查表"""
+    def val(rec, key):
+        v = rec.get(key)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if np.isnan(v) else v
+
+    rows = []
+    for rec in df.to_dict('records'):
+        vol_ma5 = val(rec, 'vol_ma5')
+        vol = val(rec, 'vol')
+        rows.append({
+            'close': val(rec, 'close'),
+            'ma5': val(rec, 'ma5'), 'ma10': val(rec, 'ma10'),
+            'ma20': val(rec, 'ma20'), 'ma60': val(rec, 'ma60'),
+            'macd_hist': val(rec, 'macd_hist'),
+            'macd_dif': val(rec, 'macd_dif'), 'macd_dea': val(rec, 'macd_dea'),
+            'rsi': val(rec, 'rsi'),
+            'kdj_k': val(rec, 'kdj_k'), 'kdj_d': val(rec, 'kdj_d'), 'kdj_j': val(rec, 'kdj_j'),
+            'boll_up': val(rec, 'boll_up'), 'boll_mid': val(rec, 'boll_mid'),
+            'boll_low': val(rec, 'boll_low'),
+            'vol_ratio': (vol / vol_ma5) if (vol_ma5 and vol is not None) else None,
+            'amount_yi': (val(rec, 'amount') or 0.0) / 1e8 if val(rec, 'amount') else None,
+        })
+    return rows
+
+
+def _precompute_render_data(g):
+    """提前加载：开局时一次性预计算整段行情的全部渲染数据。
+    之后每次点击"下一根"只做数组切片与trace拼装，不再触发 pandas 计算，避免逐根卡顿。"""
+    g['chart'] = _precompute_chart(g['df'])
+    g['param_rows'] = _param_rows(g['df'])
+    g['fig_layout'] = _chart_layout(g)
+    _game_bars(g)  # 预热游戏窗口收盘价/日期缓存
+
+
+def _chart_layout(g):
+    """静态图布局（子图网格/样式/游戏起点分隔线），每局只构建一次"""
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        row_heights=[0.58, 0.17, 0.25],
+                        vertical_spacing=0.04,
+                        subplot_titles=('行情（未来不可见）', '成交量', 'MACD'))
+    fig.update_layout(
+        template='plotly_white', height=560,
+        xaxis_rangeslider_visible=False,
+        hovermode='x unified',
+        margin=dict(l=40, r=20, t=40, b=30),
+        legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='left', x=0),
+        uirevision=f"{g['code']}-{g['freq']}",
+    )
+    fig.update_yaxes(title_text='价格', row=1, col=1, gridcolor='#f1f5f9')
+    fig.update_yaxes(title_text='成交量', row=2, col=1)
+    fig.update_yaxes(title_text='MACD', row=3, col=1)
+    # 游戏起点分隔线（游戏窗口第一根 = view_start + ctx_len）。
+    # 注：无 trace 的子图上 add_vline 会被 plotly 静默忽略，须用 add_shape/add_annotation 显式添加
+    if g['chart']['dates']:
+        gx = g['chart']['dates'][g['view_start'] + g['ctx_len']]
+        fig.add_shape(type='line', xref='x', yref='y domain', x0=gx, x1=gx, y0=0, y1=1,
+                      line=dict(color='#94a3b8', dash='dot', width=1))
+        fig.add_annotation(xref='x', yref='y domain', x=gx, y=1, text='游戏开始',
+                           showarrow=False, xanchor='right', yanchor='top',
+                           font=dict(size=10, color='#64748b'))
+    return fig.layout.to_plotly_json()
 
 
 # ===================== 展示构建 =====================
@@ -385,89 +478,90 @@ def build_status_cards(state, g, gi):
 
 
 def build_params_panel(g, gi):
-    """当前bar的技术参数面板（各类参数数据）"""
-    df = g['df']
-    row = df.iloc[g['view_start'] + g['ctx_len'] + gi]
-    price = float(row['close'])
+    """当前bar的技术参数面板（各类参数数据；数值开局时已提前计算，直接查表）"""
+    rows = g.get('param_rows')
+    if rows is None:
+        rows = _param_rows(g['df'])
+        g['param_rows'] = rows
+    p = rows[g['view_start'] + g['ctx_len'] + gi]
+    price = p['close'] if p['close'] is not None else 0.0
 
     def _ma_chip(w):
-        v = row[f'ma{w}']
-        if pd.isna(v):
+        v = p[f'ma{w}']
+        if v is None:
             return _chip(f'MA{w}', '—')
         pos = '上方' if price >= v else '下方'
         color = '#ef4444' if price >= v else '#22c55e'
         return _chip(f'MA{w}({pos})', f'{v:.2f}', color)
 
-    hist = row['macd_hist']
+    hist = p['macd_hist'] if p['macd_hist'] is not None else 0.0
+    rsi = p['rsi'] if p['rsi'] is not None else 50.0
+    kdj = '/'.join(f'{p[k]:.0f}' if p[k] is not None else '—'
+                   for k in ('kdj_k', 'kdj_d', 'kdj_j'))
+    boll = ('/'.join(f'{p[k]:.2f}' for k in ('boll_up', 'boll_mid', 'boll_low'))
+            if all(p[k] is not None for k in ('boll_up', 'boll_mid', 'boll_low')) else '—')
+    dif_dea = (f"{p['macd_dif']:.3f} / {p['macd_dea']:.3f}"
+               if p['macd_dif'] is not None and p['macd_dea'] is not None else '—')
     chips = [
         _ma_chip(5), _ma_chip(10), _ma_chip(20), _ma_chip(60),
         _chip('MACD 柱', f'{hist:+.3f}', _pct_color(hist)),
-        _chip('DIF / DEA', f"{row['macd_dif']:.3f} / {row['macd_dea']:.3f}"),
-        _chip('RSI(14)', f"{row['rsi']:.1f}",
-              '#ef4444' if row['rsi'] > 70 else ('#22c55e' if row['rsi'] < 30 else '#1e293b')),
-        _chip('KDJ', f"{row['kdj_k']:.0f}/{row['kdj_d']:.0f}/{row['kdj_j']:.0f}"),
-        _chip('BOLL 上/中/下', f"{row['boll_up']:.2f}/{row['boll_mid']:.2f}/{row['boll_low']:.2f}"),
-        _chip('量比(vs 5日均量)', f"{row['vol'] / row['vol_ma5']:.2f}" if row['vol_ma5'] else '—'),
-        _chip('成交额', f"{row.get('amount', 0) / 1e8:.2f}亿" if row.get('amount') else '—'),
+        _chip('DIF / DEA', dif_dea),
+        _chip('RSI(14)', f'{rsi:.1f}',
+              '#ef4444' if rsi > 70 else ('#22c55e' if rsi < 30 else '#1e293b')),
+        _chip('KDJ', kdj),
+        _chip('BOLL 上/中/下', boll),
+        _chip('量比(vs 5日均量)', f"{p['vol_ratio']:.2f}" if p['vol_ratio'] is not None else '—'),
+        _chip('成交额', f"{p['amount_yi']:.2f}亿" if p['amount_yi'] is not None else '—'),
     ]
     return html.Div(chips, className='flex flex-wrap gap-2')
 
 
 def build_game_figure(g, gi):
-    """K线 + MA + 成交量 + MACD，只显示到当前bar（未来不可见）"""
-    df = g['df']
+    """K线 + MA + 成交量 + MACD，只显示到当前bar（未来不可见）。
+    行情与指标序列开局时已提前加载为numpy数组，布局每局缓存，这里只做切片拼装。"""
+    chart = g.get('chart')
+    if chart is None:
+        chart = _precompute_chart(g['df'])
+        g['chart'] = chart
+    layout = g.get('fig_layout')
+    if layout is None:
+        layout = _chart_layout(g)
+        g['fig_layout'] = layout
     vs, cl = g['view_start'], g['ctx_len']
     end = vs + cl + gi
-    view = df.iloc[:end + 1]
-    dates = view['trade_date'].astype(str).tolist()
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                        row_heights=[0.58, 0.17, 0.25],
-                        vertical_spacing=0.04,
-                        subplot_titles=('行情（未来不可见）', '成交量', 'MACD'))
-    fig.add_trace(go.Candlestick(
-        x=dates, open=view['open'], high=view['high'], low=view['low'],
-        close=view['close'], name='K线',
-        increasing_line_color='#ef4444', decreasing_line_color='#22c55e'
-    ), row=1, col=1)
+    n = end + 1
+    dates = chart['dates'][:n]
+    traces = [
+        go.Candlestick(x=dates, open=chart['open'][:n], high=chart['high'][:n],
+                       low=chart['low'][:n], close=chart['close'][:n], name='K线',
+                       increasing_line_color='#ef4444', decreasing_line_color='#22c55e',
+                       xaxis='x', yaxis='y'),
+    ]
     for w, color in ((5, '#f97316'), (10, '#3b82f6'), (20, '#8b5cf6'), (60, '#64748b')):
-        fig.add_trace(go.Scatter(x=dates, y=view[f'ma{w}'], mode='lines',
+        traces.append(go.Scatter(x=dates, y=chart[f'ma{w}'][:n], mode='lines',
                                  name=f'MA{w}', line=dict(color=color, width=1.1),
-                                 hovertemplate=f'MA{w}: %{{y:.2f}}<extra></extra>'), row=1, col=1)
-    # 游戏起点分隔线
-    fig.add_vline(x=dates[cl], line_dash='dot', line_color='#94a3b8', line_width=1,
-                  annotation_text='游戏开始', annotation_position='top left',
-                  annotation_font=dict(size=10, color='#64748b'), row=1, col=1)
+                                 hovertemplate=f'MA{w}: %{{y:.2f}}<extra></extra>',
+                                 xaxis='x', yaxis='y'))
     # 现价标记
-    fig.add_trace(go.Scatter(
-        x=[dates[-1]], y=[float(view['close'].iloc[-1])], mode='markers',
+    traces.append(go.Scatter(
+        x=[dates[-1]], y=[float(chart['close'][end])], mode='markers',
         marker=dict(symbol='diamond', size=11, color='#1e293b',
                     line=dict(color='white', width=2)),
-        name='现价', showlegend=False), row=1, col=1)
+        name='现价', showlegend=False, xaxis='x', yaxis='y'))
     # 成交量
-    vol_colors = ['#ef4444' if c >= o else '#22c55e'
-                  for c, o in zip(view['close'], view['open'])]
-    fig.add_trace(go.Bar(x=dates, y=view['vol'], marker_color=vol_colors,
-                         name='成交量', showlegend=False), row=2, col=1)
+    traces.append(go.Bar(x=dates, y=chart['vol'][:n], marker_color=chart['vol_colors'][:n],
+                         name='成交量', showlegend=False, xaxis='x2', yaxis='y2'))
     # MACD
-    hist_colors = ['#ef4444' if h >= 0 else '#22c55e' for h in view['macd_hist']]
-    fig.add_trace(go.Bar(x=dates, y=view['macd_hist'], marker_color=hist_colors,
-                         name='MACD柱', showlegend=False), row=3, col=1)
-    fig.add_trace(go.Scatter(x=dates, y=view['macd_dif'], mode='lines',
-                             line=dict(color='#3b82f6', width=1.2), name='DIF'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=dates, y=view['macd_dea'], mode='lines',
-                             line=dict(color='#f97316', width=1.2), name='DEA'), row=3, col=1)
-    fig.update_layout(
-        template='plotly_white', height=560,
-        xaxis_rangeslider_visible=False,
-        hovermode='x unified',
-        margin=dict(l=40, r=20, t=40, b=30),
-        legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='left', x=0),
-        uirevision=f"{g['code']}-{g['freq']}",
-    )
-    fig.update_yaxes(title_text='价格', row=1, col=1, gridcolor='#f1f5f9')
-    fig.update_yaxes(title_text='成交量', row=2, col=1)
-    fig.update_yaxes(title_text='MACD', row=3, col=1)
-    return fig
+    traces.append(go.Bar(x=dates, y=chart['macd_hist'][:n],
+                         marker_color=chart['hist_colors'][:n],
+                         name='MACD柱', showlegend=False, xaxis='x3', yaxis='y3'))
+    traces.append(go.Scatter(x=dates, y=chart['macd_dif'][:n], mode='lines',
+                             line=dict(color='#3b82f6', width=1.2), name='DIF',
+                             xaxis='x3', yaxis='y3'))
+    traces.append(go.Scatter(x=dates, y=chart['macd_dea'][:n], mode='lines',
+                             line=dict(color='#f97316', width=1.2), name='DEA',
+                             xaxis='x3', yaxis='y3'))
+    return go.Figure(data=traces, layout=layout)
 
 
 def build_equity_figure(state, g, gi):
@@ -1032,12 +1126,12 @@ def register_stock_game_callbacks(app):
         return result + (not autoplay_on, _autoplay_label(bool(state.get('autoplay'))))
 
     def _render(state, g, gi, error):
-        """根据状态重建全部展示组件"""
+        """根据状态重建展示组件；K线图仅在推进到新bar时重建，
+        买卖/结算等不改变K线进度的操作不重发整图，减少卡顿"""
         if state.get('finished'):
             scoreboard = build_scoreboard(state, g, g['play_len'] - 1)
         else:
             scoreboard = ''
-        closes, dates = _game_bars(g)
         if state.get('finished'):
             # 结算按最后一根收盘价
             final_state = _copy_state(state)
@@ -1049,7 +1143,11 @@ def register_stock_game_callbacks(app):
             cards = build_status_cards(state, g, gi)
             params = build_params_panel(g, gi)
             eq = build_equity_figure(state, g, gi)
-        fig = build_game_figure(g, min(gi, g['play_len'] - 1))
+        if gi == state.get('chart_gi'):
+            fig = dash.no_update  # K线进度未变，图保持原样
+        else:
+            fig = build_game_figure(g, min(gi, g['play_len'] - 1))
+            state['chart_gi'] = gi
         return (state, fig, eq, cards, params,
                 build_trades_table(state), error, scoreboard)
 
@@ -1072,5 +1170,10 @@ def register_stock_game_callbacks(app):
         prevent_initial_call=True
     )
     def refresh_board(tab, _refresh, _state):
-        """切换Tab / 手动刷新 / 结算(store变化)时重绘战绩区"""
+        """切换Tab / 手动刷新 / 结算(store变化)时重绘战绩区。
+        游戏进行中每次点击也会更新 store，但战绩并未变化，
+        直接跳过，避免逐根点击都重查数据库造成卡顿。"""
+        trig = dash.ctx.triggered_id if dash.has_context() else None
+        if trig == 'sg-game-store' and not (_state and _state.get('finished')):
+            return dash.no_update
         return build_board_container(tab or 'top')
