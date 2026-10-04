@@ -5,7 +5,7 @@
 > 项目地址：https://github.com/MrXyu1453/stock_quant_model_V3
 > 免责声明先行：这是个人研究工具，所有信号与评分均不构成投资建议。
 
-![模拟炒股：逐根揭示真实历史K线模拟买卖](https://raw.githubusercontent.com/MrXyu1453/stock_quant_model_V3/main/docs/screenshots/game_top.png)
+![模拟炒股：逐根揭示真实历史K线模拟买卖](https://gcore.jsdelivr.net/gh/MrXyu1453/stock_quant_model_V3@main/docs/screenshots/game_top.png)
 
 ▲ 模拟炒股对局界面：K线 + 均线 + 成交量 + MACD 逐根揭示，顶部实时账户状态，下方全指标参数
 
@@ -38,11 +38,11 @@
 5. **模拟炒股**：隐藏未来行情，逐根揭示真实历史 K 线让你模拟买卖，A 股规则齐全（100 股整手、T+1、佣金/印花税/过户费），结算对比"买入持有"基准按超额收益评 S/A/B/C/D 段位，有排行榜，分钟线模式还能自动播放。**所有行情存在服务端，浏览器只存交易状态——想提前偷看未来K线？协议里根本没有**。
 6. **板块资金强度 / 交易日志**：行业主力资金估算（CLV 量价模型）；实盘流水记账，自动算持仓、浮动盈亏、资金曲线，可导出 CSV。
 
-![每日五面·盘前提醒](https://raw.githubusercontent.com/MrXyu1453/stock_quant_model_V3/main/docs/screenshots/market.png)
+![每日五面·盘前提醒](https://gcore.jsdelivr.net/gh/MrXyu1453/stock_quant_model_V3@main/docs/screenshots/market.png)
 
 ▲ 每日五面·盘前提醒：隔夜全球市场、A股复盘、两市成交额、自选股异动、持仓浮盈一屏看完
 
-![板块资金强度](https://raw.githubusercontent.com/MrXyu1453/stock_quant_model_V3/main/docs/screenshots/sector.png)
+![板块资金强度](https://gcore.jsdelivr.net/gh/MrXyu1453/stock_quant_model_V3@main/docs/screenshots/sector.png)
 
 ▲ 板块资金强度：全行业主力资金估算，抢筹/建仓/洗盘/出货分级，领涨股一目了然
 
